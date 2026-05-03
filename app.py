@@ -40,20 +40,20 @@ def cargar_dataset_completo():
     gdrive_url = st.secrets.get("gdrive_url")
     
     if gdrive_url:
-        # Descargamos con gdown (solo la primera vez, la caché lo retiene)
         output = "application_train.csv"
         if not os.path.exists(output):
-            gdown.download(gdrive_url, output, quiet=False)
+            try:
+                with st.spinner("Descargando dataset desde Google Drive..."):
+                    gdown.download(gdrive_url, output, quiet=False)
+            except Exception as e:
+                st.error(f"❌ Error al descargar el dataset: {e}")
+                st.stop()
+    try:
         df = pd.read_csv(output)
-        st.success("✅ Dataset cargado desde Google Drive (nube).")
-    elif os.path.exists("application_train.csv"):
-        # Fallback: si existe el archivo local (entorno de desarrollo)
-        df = pd.read_csv("application_train.csv")
-        st.info("📂 Usando archivo local application_train.csv")
-    else:
-        st.error("❌ No se encontró el dataset. Agrega el archivo CSV localmente o configura el secreto 'gdrive_url'.")
+    except Exception as e:
+        st.error(f"❌ No se pudo leer el archivo descargado: {e}")
         st.stop()
-    return df
+    st.success("✅ Dataset cargado desde Google Drive (nube).")
 
 # --- Configuración de base de datos SQLite ---
 def crear_conexion():
@@ -173,6 +173,9 @@ def crear_capa_gold(df_silver):
 
 # Descarga y carga de datos (Bronze)
 df_bronze = cargar_dataset_completo()
+if df_bronze is None:
+    st.error("No se pudo obtener el dataset. Revisa los logs.")
+    st.stop()
 
 # --- Menú lateral de navegación ---
 st.sidebar.title("📂 Capas del Data Warehouse")
