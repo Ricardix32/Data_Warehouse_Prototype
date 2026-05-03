@@ -20,14 +20,10 @@ import sqlite3
 import plotly.express as px
 import time
 import os
-#import kagglehub
 import gdown
-url = "https://drive.google.com/file/d/1ZXwmCfeONnTCDtsNw4CMk3ks4oLk9N18/view?usp=drive_link"  # Extrae el ID de tu enlace
-gdown.download(url, "application_train.csv", quiet=False)
-
 
 # =========================== CONFIGURACIÓN INICIAL ===========================
-st.set_page_config(page_title="Data Warehouse - Riesgo Crediticio", layout="wide")
+st.set_page_config(page_title="Data Warehouse - Riesgo CrediticiO", layout="wide")
 st.title("🏦 Prototipo de Data Warehouse para Riesgo Crediticio")
 st.markdown("""
 **Tesis:** Arquitectura de Data Warehouse y analítica predictiva para la evaluación de riesgo crediticio  
@@ -64,10 +60,31 @@ def crear_conexion():
     """Crea/abre la base de datos SQLite que simula el Data Warehouse."""
     conn = sqlite3.connect("credit_warehouse.db")
     return conn
-
-def almacenar_dataframe(conn, df, nombre_tabla, if_exists="replace"):
-    """Guarda un DataFrame en SQLite."""
-    df.to_sql(nombre_tabla, conn, if_exists=if_exists, index=False)
+    
+#Función cacheada que construye todo el almacén      
+@st.cache_resource
+def construir_data_warehouse(df_bronze):
+    """
+    Crea las tablas en SQLite y devuelve los dataframes ya procesados.
+    Solo se ejecuta una vez por sesión, evitando bloqueos de SQLite.
+    """
+    conn = sqlite3.connect("credit_warehouse.db")
+    
+    # Bronze
+    df_bronze.to_sql("bronze_application_train", conn, if_exists="replace", index=False)
+    
+    # Silver (procesamos y guardamos)
+    df_silver, tiempo_silver = crear_capa_silver(df_bronze)
+    df_silver.to_sql("silver_application_train", conn, if_exists="replace", index=False)
+    
+    # Gold
+    gold_contract, gold_edu, gold_family, tiempo_gold = crear_capa_gold(df_silver)
+    gold_contract.to_sql("gold_risk_contract", conn, if_exists="replace", index=False)
+    gold_edu.to_sql("gold_risk_education", conn, if_exists="replace", index=False)
+    gold_family.to_sql("gold_risk_family", conn, if_exists="replace", index=False)
+    
+    conn.close()
+    return df_silver, tiempo_silver, gold_contract, gold_edu, gold_family, tiempo_gold
 
 # --- Transformaciones capa Silver ---
 def crear_capa_silver(df_bronze):
@@ -83,11 +100,11 @@ def crear_capa_silver(df_bronze):
     df['AMT_INCOME_TOTAL'] = df['AMT_INCOME_TOTAL'].replace(0, np.nan)
     # Imputamos income con la mediana (práctica común en ausencia de dato real)
     mediana_income = df['AMT_INCOME_TOTAL'].median()
-    df['AMT_INCOME_TOTAL'].fillna(mediana_income, inplace=True)
+    df['AMT_INCOME_TOTAL'] = df['AMT_INCOME_TOTAL'].fillna(mediana_income)
 
     # Otras imputaciones básicas
     for col in ['AMT_CREDIT', 'AMT_ANNUITY']:
-        df[col].fillna(df[col].median(), inplace=True)
+        df[col] = df[col].fillna(df[col].median())
 
     # DAYS_EMPLOYED: positivo = desempleado, negativo = empleado; creamos indicador binario
     df['IS_EMPLOYED'] = (df['DAYS_EMPLOYED'] < 0).astype(int)
@@ -157,9 +174,6 @@ def crear_capa_gold(df_silver):
 # Descarga y carga de datos (Bronze)
 df_bronze = cargar_dataset_completo()
 
-# Conexión a SQLite
-conn = crear_conexion()
-
 # --- Menú lateral de navegación ---
 st.sidebar.title("📂 Capas del Data Warehouse")
 capa = st.sidebar.radio(
@@ -172,31 +186,11 @@ capa = st.sidebar.radio(
 if st.sidebar.button("🔄 Ejecutar Pipeline ETL completo"):
     # (Se ejecuta automáticamente al cargar la app, pero puede forzarse)
     st.cache_data.clear()
+    st.cache_resource.clear()
     st.rerun()
 
-# --- Almacenamiento inicial de capa Bronze en SQLite (si no existe) ---
-try:
-    df_bronze.to_sql("bronze_application_train", conn, if_exists="fail", index=False)
-except ValueError:
-    pass  # ya existe
-
-# Procesamiento Silver (con caché para no recalcular cada vez)
-@st.cache_data
-def obtener_silver(df_bronze):
-    return crear_capa_silver(df_bronze)
-
-df_silver, tiempo_silver = obtener_silver(df_bronze)
-almacenar_dataframe(conn, df_silver, "silver_application_train")
-
-# Procesamiento Gold
-@st.cache_data
-def obtener_gold(df_silver):
-    return crear_capa_gold(df_silver)
-
-gold_contract, gold_edu, gold_family, tiempo_gold = obtener_gold(df_silver)
-almacenar_dataframe(conn, gold_contract, "gold_risk_contract")
-almacenar_dataframe(conn, gold_edu, "gold_risk_education")
-almacenar_dataframe(conn, gold_family, "gold_risk_family")
+# Construcción del Data Warehouse (cacheada como recurso)
+df_silver, tiempo_silver, gold_contract, gold_edu, gold_family, tiempo_gold = construir_data_warehouse(df_bronze)
 
 # =============================== MOSTRAR CAPAS ===============================
 if capa == "🥉 Bronze (Datos crudos)":
@@ -333,6 +327,3 @@ definidos en los objetivos específicos (reducción de tiempo y aumento de preci
 - Ampliar la capa Gold con métricas ESG.
 - Desplegar en Streamlit Cloud para revisión externa.
 """)
-
-# Cierre de conexión
-conn.close()
