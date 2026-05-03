@@ -48,12 +48,23 @@ def cargar_dataset_completo():
             except Exception as e:
                 st.error(f"❌ Error al descargar el dataset: {e}")
                 st.stop()
-    try:
-        df = pd.read_csv(output)
-    except Exception as e:
-        st.error(f"❌ No se pudo leer el archivo descargado: {e}")
+        try:
+            df = pd.read_csv(output)
+        except Exception as e:
+            st.error(f"❌ No se pudo leer el archivo descargado: {e}")
+            st.stop()
+        st.success("✅ Dataset cargado desde Google Drive (nube).")
+        return df
+
+    elif os.path.exists("application_train.csv"):
+        # Fallback: si existe el archivo local (entorno de desarrollo)
+        df = pd.read_csv("application_train.csv")
+        st.info("📂 Usando archivo local application_train.csv")
+        return df
+
+    else:
+        st.error("❌ No se encontró el dataset. Agrega el archivo CSV localmente o configura el secreto 'gdrive_url'.")
         st.stop()
-    st.success("✅ Dataset cargado desde Google Drive (nube).")
 
 # --- Configuración de base de datos SQLite ---
 def crear_conexion():
