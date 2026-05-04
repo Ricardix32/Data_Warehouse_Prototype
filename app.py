@@ -483,8 +483,9 @@ def generar_reporte_pdf(df_bronze, df_silver, gold_contract, gold_edu, gold_fami
         ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5, f'{val:.1f}%', ha='center', fontsize=8)
     plt.tight_layout()
 
-    max_val = gold_contract['TASA_MORA'].max() * 100
-    ax.set_ylim(0, max_val * 1.55)
+    # Después de crear las barras y antes de guardar la imagen
+    max_val = gold_edu['TASA_MORA'].max() * 100
+    ax.set_ylim(0, max_val * 1.2)
 
     img_buf2 = BytesIO()
     fig.savefig(img_buf2, format='PNG', dpi=120)
@@ -523,8 +524,8 @@ def generar_reporte_pdf(df_bronze, df_silver, gold_contract, gold_edu, gold_fami
         ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01, f'{val:.2f}', ha='center', fontsize=8)
     plt.tight_layout()
 
-    max_val = gold_contract['TASA_MORA'].max() * 100
-    ax.set_ylim(0, max_val * 1.1)
+    max_val = gold_family['RAZON_CREDITO_INGRESO_PROMEDIO'].max()
+    ax.set_ylim(0, max_val * 1.2)
 
     img_buf3 = BytesIO()
     fig.savefig(img_buf3, format='PNG', dpi=120)
