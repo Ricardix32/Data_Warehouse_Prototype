@@ -69,8 +69,6 @@ else:
 
 # --------------------------- BOTONES DEL SIDEBAR ---------------------------
 if st.sidebar.button("🔄 Ejecutar Pipeline ETL completo"):
-    st.cache_data.clear()
-    st.cache_resource.clear()
     st.rerun()
 
 if st.sidebar.button("📄 Generar Reporte PDF del DW", key="btn_reporte_pdf"):
