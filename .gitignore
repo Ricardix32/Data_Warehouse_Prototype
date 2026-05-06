@@ -2,3 +2,4 @@ application_train.csv
 # Base de datos SQLite generada localmente
 credit_warehouse.db
 .streamlit/
+GEMINI.md

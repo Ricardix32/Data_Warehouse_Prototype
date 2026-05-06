@@ -1,0 +1,1 @@
+from .plots import plot_bad_rate_by_contract,  plot_bad_rate_by_education, plot_income_ratio_by_family
