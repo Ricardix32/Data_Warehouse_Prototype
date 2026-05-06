@@ -123,17 +123,35 @@ def generar_reporte_pdf(
     pdf.cell(0, 7, "Variables Derivadas", ln=True)
     headers_der = [h.title() for h in settings.PDF_COLUMNS_DERIVED]
     pdf.set_font("Arial", "B", settings.pdf_font_size_caption)
-    widths_der = [settings.pdf_cell_w_var, settings.pdf_cell_w_formula, settings.pdf_cell_w_stat, settings.pdf_cell_w_stat, settings.pdf_cell_w_res_null]
+    # Tabla de variables derivadas
+    headers_der = [h.title() for h in settings.PDF_COLUMNS_DERIVED]
+    widths_der = [
+        settings.pdf_cell_w_var,
+        settings.pdf_cell_w_formula,
+        settings.pdf_cell_w_stat,
+        settings.pdf_cell_w_stat,
+        settings.pdf_cell_w_res_null,
+    ]
+    # Imprimir encabezados
+    pdf.set_font("Arial", "B", settings.pdf_font_size_caption)
     for i, h in enumerate(headers_der):
         pdf.cell(widths_der[i], 6, h, border=1)
     pdf.ln()
+    
+    # Cuerpo de la tabla usando solo la configuración
     pdf.set_font("Arial", "", settings.pdf_font_size_caption)
+    cols = settings.PDF_COLUMNS_DERIVED  # tupla con los nombres reales de las columnas
     for _, row in derivadas.iterrows():
-        pdf.cell(widths_der[0], 5, str(row['VARIABLE']), border=1)
-        pdf.cell(widths_der[1], 5, str(row['FÓRMULA']), border=1)
-        pdf.cell(widths_der[2], 5, f"{row['MEDIA']:.4f}" if pd.notna(row['MEDIA']) else "", border=1)
-        pdf.cell(widths_der[3], 5, f"{row['MEDIANA']:.4f}" if pd.notna(row['MEDIANA']) else "", border=1)
-        pdf.cell(widths_der[4], 5, str(row['NULOS_RESIDUALES']), border=1)
+        for i, col in enumerate(cols):
+            value = row[col]
+            # Formato especial para columnas numéricas (MEDIA, MEDIANA)
+            if col in ('MEDIA', 'MEDIANA'):
+                text = f"{value:.4f}" if pd.notna(value) else ""
+            elif col == cols[-1]:  # última columna (NULOS_RESIDUALES)
+                text = str(value) if pd.notna(value) else ""
+            else:
+                text = str(value)
+            pdf.cell(widths_der[i], 5, text, border=1)
         pdf.ln()
 
     pdf.ln(5)

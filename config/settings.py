@@ -97,6 +97,7 @@ class Settings:
     fmt_pct_one_decimal: str = '{:.1f}%'
     fmt_decimal_two_places: str = '{:.2f}'
     fmt_pct_two_decimals: str = '{:.2%}'
+    fmt_stat_decimal: str = '{:.4f}'
     
     #limite de auditorías
     audit_head_limit: int = 10

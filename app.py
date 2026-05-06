@@ -26,6 +26,11 @@ settings = load_config()
 @st.cache_data(show_spinner="Descargando dataset...")
 def get_bronze_df(settings):
     from src.data.loader import load_raw_dataset
+    try:
+        df_bronze = get_bronze_df(settings)
+    except RuntimeError as e:
+        st.error(str(e))
+        st.stop()
     return load_raw_dataset(settings)
 
 @st.cache_resource
