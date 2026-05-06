@@ -26,11 +26,6 @@ settings = load_config()
 @st.cache_data(show_spinner="Descargando dataset...")
 def get_bronze_df(settings):
     from src.data.loader import load_raw_dataset
-    try:
-        df_bronze = get_bronze_df(settings)
-    except RuntimeError as e:
-        st.error(str(e))
-        st.stop()
     return load_raw_dataset(settings)
 
 @st.cache_resource
@@ -38,7 +33,11 @@ def build_warehouse(settings):
     return run_etl_pipeline(settings)
 
 # Ejecución del pipeline
-df_bronze = get_bronze_df(settings)
+try:
+    df_bronze = get_bronze_df(settings)
+except RuntimeError as e:
+    st.error(str(e))
+    st.stop()
 warehouse_data = build_warehouse(settings)
 
 # Desempaquetado para las vistas
