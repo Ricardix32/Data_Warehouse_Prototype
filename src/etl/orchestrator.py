@@ -5,9 +5,9 @@ from typing import Dict, Any
 from config import Settings
 from src.data.loader import load_raw_dataset
 from src.data.repository import DataRepository, SQLiteRepository
-from bronze import ingest_bronze
-from silver import transform_silver
-from gold import transform_gold
+from src.etl.bronze import ingest_bronze
+from src.etl.silver import transform_silver
+from src.etl.gold import transform_gold
 
 
 logger = logging.getLogger(__name__)

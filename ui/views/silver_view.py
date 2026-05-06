@@ -1,6 +1,6 @@
 import streamlit as st
 import plotly.express as px
-from audit import trazabilidad_silver
+from src.audit import trazabilidad_silver
 
 def render_silver(df_bronze, df_silver, meta_silver, settings):
     st.header("Capa Silver – Transformación y enriquecimiento")

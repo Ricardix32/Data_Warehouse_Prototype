@@ -1,35 +1,17 @@
 """
-app.py - Prototipo de Data Warehouse para Evaluación de Riesgo Crediticio
-Arquitectura Medallion (Bronze, Silver, Gold) aplicada al dataset
-Home Credit Default Risk. Simula la ingesta, limpieza y agregación
-de datos que una microfinanciera ejecutaría para calcular capacidad
-de endeudamiento, en línea con la tesis:
-"Arquitectura de Data Warehouse y analítica predictiva para la evaluación
-de riesgo crediticio en instituciones microfinancieras"
-
-Autor: Data Engineer & Streamlit Research Prototyper
-Colaboración: Asesor DeepSeek Expert, Google Gemini Pro
-
-Versión: 2.0 - Con botones de auditoría, trazabilidad y exportación
+app.py - Orquestador principal del prototipo Data Warehouse – Riesgo Crediticio.
+Arquitectura Medallion (Bronze → Silver → Gold) con vistas modulares.
 """
 
 import streamlit as st
-import pandas as pd
-import numpy as np
-import sqlite3
-import plotly.express as px
-import plotly.graph_objects as go
-import time
-import os
-import gdown
-from fpdf import FPDF
-import matplotlib.pyplot as plt
-from io import BytesIO
-import matplotlib
-matplotlib.use('Agg')  # Necesario para entornos sin GUI
+from config import load_config
+from src.etl import run_etl_pipeline
+from src.export import generar_reporte_pdf
+from ui.views.bronze_view import render_bronze
+from ui.views.silver_view import render_silver
+from ui.views.gold_view import render_gold
 
-
-# =========================== CONFIGURACIÓN INICIAL ===========================
+# --------------------------- CONFIGURACIÓN INICIAL ---------------------------
 st.set_page_config(page_title="Data Warehouse - Riesgo Crediticio", layout="wide")
 st.title("🏦 Prototipo de Data Warehouse para Riesgo Crediticio")
 st.markdown("""
@@ -38,525 +20,34 @@ st.markdown("""
 *Este prototipo materializa la capa de datos de la investigación (Bronze → Silver → Gold).*
 """)
 
-# ====================== FUNCIONES DE CARGA Y TRANSFORMACIÓN ======================
+# --------------------------- CARGA DE CONFIGURACIÓN Y DATOS ---------------------------
+settings = load_config()
 
-# --- Descarga del dataset desde gdrive (capa de ingesta) ---
-@st.cache_data(show_spinner="Descargando dataset completo desde Drive...")
-def cargar_dataset_completo():
-    # Intentamos obtener la URL desde los secretos de Streamlit Cloud
-    gdrive_url = st.secrets.get("gdrive_url")
-    
-    if gdrive_url:
-        output = "application_train.csv"
-        if not os.path.exists(output):
-            try:
-                with st.spinner("Descargando dataset desde Google Drive..."):
-                    gdown.download(gdrive_url, output, quiet=False)
-            except Exception as e:
-                st.error(f"❌ Error al descargar el dataset: {e}")
-                st.stop()
-        try:
-            df = pd.read_csv(output)
-        except Exception as e:
-            st.error(f"❌ No se pudo leer el archivo descargado: {e}")
-            st.stop()
-        st.success("✅ Dataset cargado desde Google Drive (nube).")
-        return df
-    elif os.path.exists("application_train.csv"):
-        # Fallback: si existe el archivo local (entorno de desarrollo)
-        df = pd.read_csv("application_train.csv")
-        st.info("📂 Usando archivo local application_train.csv")
-        return df
-    else:
-        st.error("❌ No se encontró el dataset. Agrega el archivo CSV localmente o configura el secreto 'gdrive_url'.")
-        st.stop()
+@st.cache_data(show_spinner="Descargando dataset...")
+def get_bronze_df(settings):
+    from src.data.loader import load_raw_dataset
+    return load_raw_dataset(settings)
 
-# --- Configuración de base de datos SQLite ---
-def crear_conexion():
-    """Crea/abre la base de datos SQLite que simula el Data Warehouse."""
-    conn = sqlite3.connect("credit_warehouse.db")
-    return conn
-    
-# Función cacheada que construye todo el almacén      
 @st.cache_resource
-def construir_data_warehouse(df_bronze):
-    """
-    Crea las tablas en SQLite y devuelve los dataframes ya procesados.
-    Solo se ejecuta una vez por sesión, evitando bloqueos de SQLite.
-    """
-    conn = sqlite3.connect("credit_warehouse.db")
-    
-    # Bronze
-    df_bronze.to_sql("bronze_application_train", conn, if_exists="replace", index=False)
-    
-    # Silver (procesamos y guardamos)
-    df_silver, tiempo_silver = crear_capa_silver(df_bronze)
-    df_silver.to_sql("silver_application_train", conn, if_exists="replace", index=False)
-    
-    # Gold
-    gold_contract, gold_edu, gold_family, tiempo_gold = crear_capa_gold(df_silver)
-    gold_contract.to_sql("gold_risk_contract", conn, if_exists="replace", index=False)
-    gold_edu.to_sql("gold_risk_education", conn, if_exists="replace", index=False)
-    gold_family.to_sql("gold_risk_family", conn, if_exists="replace", index=False)
-    
-    conn.close()
-    return df_silver, tiempo_silver, gold_contract, gold_edu, gold_family, tiempo_gold
+def build_warehouse(settings):
+    return run_etl_pipeline(settings)
 
-# --- Transformaciones capa Silver ---
-def crear_capa_silver(df_bronze):
-    """
-    Capa Silver: limpieza, imputación y creación de variables derivadas.
-    Se aplican reglas de negocio alineadas con el cálculo de capacidad de endeudamiento.
-    """
-    tiempo_inicio = time.time()
-    df = df_bronze.copy()
-    
-    # 1. Tratamiento de valores nulos y ceros inconsistentes
-    # Income no puede ser cero para el cálculo de razones financieras
-    df['AMT_INCOME_TOTAL'] = df['AMT_INCOME_TOTAL'].replace(0, np.nan)
-    # Imputamos income con la mediana (práctica común en ausencia de dato real)
-    mediana_income = df['AMT_INCOME_TOTAL'].median()
-    df['AMT_INCOME_TOTAL'] = df['AMT_INCOME_TOTAL'].fillna(mediana_income)
-    
-    # Otras imputaciones básicas
-    for col in ['AMT_CREDIT', 'AMT_ANNUITY']:
-        df[col] = df[col].fillna(df[col].median())
-    
-    # DAYS_EMPLOYED: positivo = desempleado, negativo = empleado; creamos indicador binario
-    df['IS_EMPLOYED'] = (df['DAYS_EMPLOYED'] < 0).astype(int)
-    
-    # 2. Variables derivadas (ratios de capacidad de pago)
-    # Razón crédito / ingreso: endeudamiento relativo
-    df['CREDIT_TO_INCOME_RATIO'] = df['AMT_CREDIT'] / df['AMT_INCOME_TOTAL']
-    # Razón cuota anual / ingreso: carga financiera
-    df['ANNUITY_INCOME_RATIO'] = df['AMT_ANNUITY'] / df['AMT_INCOME_TOTAL']
-    
-    # 3. Filtrado de outliers simples (aquellos a más de 3 desviaciones de la media)
-    for col in ['CREDIT_TO_INCOME_RATIO', 'ANNUITY_INCOME_RATIO']:
-        media = df[col].mean()
-        desv = df[col].std()
-        df = df[(df[col] >= media - 3*desv) & (df[col] <= media + 3*desv)]
-    
-    # 4. Selección de columnas relevantes para análisis de riesgo base
-    columnas_silver = [
-        'SK_ID_CURR', 'TARGET', 'NAME_CONTRACT_TYPE', 'CODE_GENDER',
-        'AMT_CREDIT', 'AMT_INCOME_TOTAL', 'AMT_ANNUITY',
-        'CREDIT_TO_INCOME_RATIO', 'ANNUITY_INCOME_RATIO',
-        'IS_EMPLOYED', 'NAME_EDUCATION_TYPE', 'NAME_FAMILY_STATUS',
-        'CNT_CHILDREN'
-    ]
-    
-    df_silver = df[columnas_silver].copy()
-    
-    tiempo_fin = time.time()
-    tiempo_procesamiento = tiempo_fin - tiempo_inicio
-    
-    return df_silver, tiempo_procesamiento
+# Ejecución del pipeline
+df_bronze = get_bronze_df(settings)
+warehouse_data = build_warehouse(settings)
 
-# --- Transformaciones capa Gold ---
-def crear_capa_gold(df_silver):
-    """
-    Capa Gold: agrega métricas de riesgo para consultas de negocio.
-    Se generan tablas dimensionales (métricas por segmentos) similares a las
-    que un analista de crédito consultaría.
-    """
-    tiempo_inicio = time.time()
-    df = df_silver.copy()
-    
-    # Agregación: tasa de mora (bad rate) por tipo de contrato
-    bad_rate_contract = df.groupby('NAME_CONTRACT_TYPE')['TARGET'].agg(['mean', 'count']).reset_index()
-    bad_rate_contract.columns = ['TIPO_CONTRATO', 'TASA_MORA', 'TOTAL_CLIENTES']
-    bad_rate_contract['TASA_MORA'] = bad_rate_contract['TASA_MORA'].round(4)
-    
-    # Bad rate por nivel educativo
-    bad_rate_edu = df.groupby('NAME_EDUCATION_TYPE')['TARGET'].agg(['mean', 'count']).reset_index()
-    bad_rate_edu.columns = ['NIVEL_EDUCATIVO', 'TASA_MORA', 'TOTAL_CLIENTES']
-    bad_rate_edu['TASA_MORA'] = bad_rate_edu['TASA_MORA'].round(4)
-    
-    # Razón crédito/ingreso promedio por estado civil
-    ratio_family = df.groupby('NAME_FAMILY_STATUS')['CREDIT_TO_INCOME_RATIO'].mean().reset_index()
-    ratio_family.columns = ['ESTADO_CIVIL', 'RAZON_CREDITO_INGRESO_PROMEDIO']
-    
-    # Unificamos en una sola tabla resumen para visualización
-    gold_summary = pd.merge(bad_rate_contract,
-                            df.groupby('NAME_CONTRACT_TYPE')['CREDIT_TO_INCOME_RATIO'].mean().reset_index(),
-                            left_on='TIPO_CONTRATO', right_on='NAME_CONTRACT_TYPE', how='left'
-                           ).drop(columns='NAME_CONTRACT_TYPE')
-    
-    tiempo_fin = time.time()
-    tiempo_procesamiento = tiempo_fin - tiempo_inicio
-    
-    return gold_summary, bad_rate_edu, ratio_family, tiempo_procesamiento
+# Desempaquetado para las vistas
+df_silver = warehouse_data["silver_df"]
+gold_contract = warehouse_data["gold_contract"]
+gold_edu = warehouse_data["gold_edu"]
+gold_family = warehouse_data["gold_family"]
+meta_silver = warehouse_data["meta_silver"]
+meta_gold = warehouse_data["meta_gold"]
 
+# Guardamos el estado de ETL completado
+st.session_state.etl_completado = True
 
-# --- BOTÓN 1: Auditoría de calidad en Bronze ---
-def auditar_calidad_bronze(df):
-    """Evalúa la calidad de los datos crudos: nulos, duplicados y memoria."""
-    total_cols = len(df.columns)
-    
-    # Porcentaje de nulos por columna
-    null_percent = (df.isnull().sum() / len(df)) * 100
-    
-    # Clasificación de columnas
-    criticas = null_percent[null_percent > 50].reset_index()
-    criticas.columns = ['COLUMNA', '%_NULOS']
-    criticas['CLASIFICACION'] = 'CRÍTICA (>50%)'
-    
-    moderadas = null_percent[(null_percent >= 20) & (null_percent <= 50)].reset_index()
-    moderadas.columns = ['COLUMNA', '%_NULOS']
-    moderadas['CLASIFICACION'] = 'MODERADA (20-50%)'
-    
-    aceptables = null_percent[null_percent < 20].reset_index()
-    aceptables.columns = ['COLUMNA', '%_NULOS']
-    aceptables['CLASIFICACION'] = 'ACEPTABLE (<20%)'
-    
-    resultado = pd.concat([criticas, moderadas], ignore_index=True)
-    resultado['%_NULOS'] = resultado['%_NULOS'].round(2)
-    
-    # Duplicados basados en SK_ID_CURR
-    duplicados = df['SK_ID_CURR'].duplicated().sum() if 'SK_ID_CURR' in df.columns else 0
-    pct_duplicados = (duplicados / len(df)) * 100
-    
-    # Memoria
-    memoria_mb = df.memory_usage(deep=True).sum() / (1024 * 1024)
-    
-    return resultado, len(criticas), pct_duplicados, memoria_mb, total_cols
-
-
-# --- BOTÓN 2: Trazabilidad de reglas en Silver ---
-def trazabilidad_silver(df_bronze, df_silver):
-    """Compara el estado antes (bronze) y después (silver) de las transformaciones."""
-    # Balance de filas
-    filas_bronze = len(df_bronze)
-    filas_silver = len(df_silver)
-    filas_eliminadas = filas_bronze - filas_silver
-    
-    # Balance de columnas
-    cols_bronze = len(df_bronze.columns)
-    cols_silver = len(df_silver.columns)
-    
-    # Identificar cuántos ingresos eran 0 o nulos en bronze
-    if 'AMT_INCOME_TOTAL' in df_bronze.columns:
-        ingresos_problematicos = df_bronze['AMT_INCOME_TOTAL'].isnull().sum() + (df_bronze['AMT_INCOME_TOTAL'] == 0).sum()
-    else:
-        ingresos_problematicos = 0
-    
-    balance = pd.DataFrame({
-        'MÉTRICA': ['Filas totales', 'Columnas totales', 'Ingresos imputados (nulos/cero -> mediana)'],
-        'VALOR_BRONZE': [filas_bronze, cols_bronze, ingresos_problematicos],
-        'VALOR_SILVER': [filas_silver, cols_silver, 0],
-        'VARIACIÓN': [f'-{filas_eliminadas} filas (outliers)', 
-                      f'+{cols_silver - cols_bronze} columnas derivadas',
-                      f'{ingresos_problematicos} valores corregidos']
-    })
-    
-    # Variables derivadas
-    derivadas = pd.DataFrame({
-        'VARIABLE': ['CREDIT_TO_INCOME_RATIO', 'ANNUITY_INCOME_RATIO', 'IS_EMPLOYED'],
-        'FÓRMULA': ['AMT_CREDIT / AMT_INCOME_TOTAL', 'AMT_ANNUITY / AMT_INCOME_TOTAL', 'DAYS_EMPLOYED < 0 -> 1 (empleado)'],
-        'MIN': [df_silver['CREDIT_TO_INCOME_RATIO'].min(), df_silver['ANNUITY_INCOME_RATIO'].min(), None],
-        'MAX': [df_silver['CREDIT_TO_INCOME_RATIO'].max(), df_silver['ANNUITY_INCOME_RATIO'].max(), None],
-        'MEDIA': [df_silver['CREDIT_TO_INCOME_RATIO'].mean(), df_silver['ANNUITY_INCOME_RATIO'].mean(), None],
-        'MEDIANA': [df_silver['CREDIT_TO_INCOME_RATIO'].median(), df_silver['ANNUITY_INCOME_RATIO'].median(), None],
-        'NULOS_RESIDUALES': [df_silver['CREDIT_TO_INCOME_RATIO'].isnull().sum(), 
-                             df_silver['ANNUITY_INCOME_RATIO'].isnull().sum(), 
-                             df_silver['IS_EMPLOYED'].isnull().sum()]
-    })
-    
-    # Redondear valores numéricos para mejor visualización
-# Código corregido (numérico con NaN)
-    for col in ['MIN', 'MAX', 'MEDIA', 'MEDIANA']:
-        derivadas[col] = derivadas[col].apply(lambda x: round(x, 4) if pd.notnull(x) else np.nan)
-    
-    return balance, derivadas, filas_eliminadas
-
-
-# --- BOTÓN 3: Exportar feature store en Gold ---
-def exportar_feature_store(df_silver, gold_contract, gold_edu, gold_family):
-    """Prepara el catálogo de features y exporta datasets para ML."""
-    # Catálogo de features
-    features_numericas = df_silver.select_dtypes(include=[np.number]).columns.tolist()
-    features_categoricas = df_silver.select_dtypes(include=['object']).columns.tolist()
-    
-    catalogo = []
-    for col in features_numericas:
-        if col != 'TARGET':  # TARGET es la variable objetivo, no un predictor
-            catalogo.append({
-                'FEATURE': col,
-                'TIPO': 'Numérica',
-                'RANGO': f"{df_silver[col].min():.2f} - {df_silver[col].max():.2f}",
-                'NULOS': df_silver[col].isnull().sum()
-            })
-    
-    for col in features_categoricas:
-        catalogo.append({
-            'FEATURE': col,
-            'TIPO': 'Categórica',
-            'RANGO': f"{df_silver[col].nunique()} categorías únicas",
-            'NULOS': df_silver[col].isnull().sum()
-        })
-    
-    df_catalogo = pd.DataFrame(catalogo)
-    
-    # Matriz de correlación
-    cols_corr = [c for c in features_numericas if c != 'TARGET']
-    if cols_corr:
-        corr_matrix = df_silver[cols_corr].corr()
-    else:
-        corr_matrix = pd.DataFrame()
-    
-    # CSV Gold consolidado
-    csv_gold = pd.concat([
-        gold_contract.assign(TIPO_METRICA='RIESGO_CONTRATO'),
-        gold_edu.assign(TIPO_METRICA='RIESGO_EDUCACION')
-    ], ignore_index=True)
-    
-    # CSV Silver (muestra para ML)
-    csv_ml = df_silver.sample(n=min(1000, len(df_silver)), random_state=42)
-    
-    return df_catalogo, corr_matrix, csv_gold, csv_ml
-
-# GENERAR REPORTE PDF
-def generar_reporte_pdf(df_bronze, df_silver, gold_contract, gold_edu, gold_family):
-    """Genera un PDF profesional con análisis de datos y gráficos para la tesis."""
-    
-    pdf = FPDF()
-    pdf.add_page()
-    
-    # --- Configuración de estilos ---
-    pdf.set_auto_page_break(auto=True, margin=15)
-    
-    # --- PORTADA ---
-    pdf.set_font("Arial", "B", 18)
-    pdf.cell(0, 10, "Reporte de Data Warehouse para Riesgo Crediticio", ln=True, align="C")
-    pdf.ln(5)
-    pdf.set_font("Arial", "", 12)
-    pdf.cell(0, 8, "Proyecto de Tesis: Arquitectura de Data Warehouse y analítica predictiva", ln=True, align="C")
-    pdf.cell(0, 8, "para la evaluación de riesgo crediticio en instituciones microfinancieras", ln=True, align="C")
-    pdf.ln(5)
-    pdf.set_font("Arial", "I", 11)
-    pdf.cell(0, 8, "Autores: Montenegro Baca, Zee Ricardo & Rodriguez Preciado, Andre Jhonel", ln=True, align="C")
-    pdf.cell(0, 8, "Asesor: Dr. Santos Fernandez, Juan Pedro", ln=True, align="C")
-    pdf.cell(0, 8, f"Fecha: {pd.Timestamp.now().strftime('%d/%m/%Y %H:%M')}", ln=True, align="C")
-    pdf.ln(10)
-    
-    # ========== SECCIÓN 1: AUDITORÍA DE CALIDAD (BRONZE) ==========
-    pdf.set_font("Arial", "B", 14)
-    pdf.cell(0, 10, "1. Auditoría de Datos Crudos (Bronze)", ln=True)
-    pdf.ln(3)
-    
-    resultado_aud, num_criticas, pct_dup, memoria_mb, total_cols = auditar_calidad_bronze(df_bronze)
-    
-    # Métricas
-    pdf.set_font("Arial", "", 11)
-    pdf.cell(0, 7, f"Total de columnas: {total_cols}  |  Columnas críticas: {num_criticas}  |  Duplicados: {pct_dup:.2f}%  |  Memoria: {memoria_mb:.2f} MB", ln=True)
-    pdf.ln(3)
-    
-    # Tabla de columnas problemáticas
-    if not resultado_aud.empty:
-        pdf.set_font("Arial", "B", 10)
-        pdf.cell(60, 7, "Columna", border=1)
-        pdf.cell(30, 7, "% Nulos", border=1)
-        pdf.cell(40, 7, "Clasificación", border=1, ln=True)
-        pdf.set_font("Arial", "", 9)
-        for _, row in resultado_aud.head(10).iterrows():
-            pdf.cell(60, 6, row['COLUMNA'], border=1)
-            pdf.cell(30, 6, f"{row['%_NULOS']:.2f}", border=1)
-            pdf.cell(40, 6, row['CLASIFICACION'], border=1, ln=True)
-    
-    pdf.ln(5)
-    # Análisis BA
-    pdf.set_fill_color(240, 240, 240)
-    pdf.set_font("Arial", "I", 10)
-    pdf.multi_cell(0, 6, 
-        "Análisis BA: La presencia de columnas con más del 50% de valores nulos introduce asimetría de información severa. "
-        "En una microfinanciera sin automatización, estos vacíos obligan al analista a rechazar solicitudes o decidir con datos incompletos. "
-        "Se recomienda aplicar reglas de imputación consistentes en la capa Silver.",
-        fill=True)
-    pdf.ln(5)
-    
-    # ========== SECCIÓN 2: TRAZABILIDAD SILVER ==========
-    pdf.set_font("Arial", "B", 14)
-    pdf.cell(0, 10, "2. Transformaciones y Calidad (Silver)", ln=True)
-    pdf.ln(3)
-    
-    balance, derivadas, _ = trazabilidad_silver(df_bronze, df_silver)
-    
-    # Balance
-    pdf.set_font("Arial", "B", 10)
-    pdf.cell(60, 7, "Métrica", border=1)
-    pdf.cell(40, 7, "Valor Bronze", border=1)
-    pdf.cell(40, 7, "Valor Silver", border=1)
-    pdf.cell(50, 7, "Variación", border=1, ln=True)
-    pdf.set_font("Arial", "", 9)
-    for _, row in balance.iterrows():
-        pdf.cell(60, 6, row['MÉTRICA'], border=1)
-        pdf.cell(40, 6, str(row['VALOR_BRONZE']), border=1)
-        pdf.cell(40, 6, str(row['VALOR_SILVER']), border=1)
-        pdf.cell(50, 6, str(row['VARIACIÓN']), border=1, ln=True)
-    
-    pdf.ln(3)
-    # Variables derivadas
-    pdf.set_font("Arial", "B", 11)
-    pdf.cell(0, 7, "Variables Derivadas", ln=True)
-    # Tabla simplificada
-    pdf.set_font("Arial", "B", 8)
-    pdf.cell(45, 6, "Variable", border=1)
-    pdf.cell(70, 6, "Fórmula", border=1)
-    pdf.cell(20, 6, "Media", border=1)
-    pdf.cell(20, 6, "Mediana", border=1)
-    pdf.cell(20, 6, "Nulos Res.", border=1, ln=True)
-    pdf.set_font("Arial", "", 8)
-    for _, row in derivadas.iterrows():
-        pdf.cell(45, 5, row['VARIABLE'], border=1)
-        pdf.cell(70, 5, row['FÓRMULA'], border=1)
-        pdf.cell(20, 5, str(row['MEDIA']), border=1)
-        pdf.cell(20, 5, str(row['MEDIANA']), border=1)
-        pdf.cell(20, 5, str(row['NULOS_RESIDUALES']), border=1, ln=True)
-    
-    pdf.ln(5)
-    pdf.set_fill_color(240, 240, 240)
-    pdf.set_font("Arial", "I", 10)
-    pdf.multi_cell(0, 6, 
-        "Análisis BA: Las variables derivadas CREDIT_TO_INCOME_RATIO y ANNUITY_INCOME_RATIO permiten estandarizar la capacidad de pago "
-        "independientemente del monto absoluto. La creación del indicador IS_EMPLOYED a través de reglas objetivas elimina la subjetividad "
-        "del analista al clasificar la situación laboral del solicitante.",
-        fill=True)
-    pdf.ln(5)
-    
-    # ========== SECCIÓN 3: MÉTRICAS DE RIESGO (GOLD) ==========
-    pdf.set_font("Arial", "B", 14)
-    pdf.cell(0, 10, "3. Métricas de Riesgo (Gold)", ln=True)
-    pdf.ln(3)
-    
-    # -- Gráfico 1: Tasa mora por contrato --
-    fig, ax = plt.subplots(figsize=(5, 3))
-    bars = ax.bar(gold_contract['TIPO_CONTRATO'], gold_contract['TASA_MORA']*100, color='steelblue')
-    ax.set_title('Tasa de Morosidad por Tipo de Contrato', fontsize=10)
-    ax.set_ylabel('Tasa de Mora (%)')
-    ax.tick_params(axis='x', rotation=45)
-    for bar, val in zip(bars, gold_contract['TASA_MORA']*100):
-        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5, f'{val:.1f}%', ha='center', fontsize=8)
-    plt.tight_layout()
-
-    # Ajustar límite superior del eje Y para que las etiquetas queden dentro
-    max_val = gold_contract['TASA_MORA'].max() * 100
-    ax.set_ylim(0, max_val * 1.17)
-
-    img_buf = BytesIO()
-    fig.savefig(img_buf, format='PNG', dpi=120)
-    plt.close()
-    img_buf.seek(0)
-    pdf.image(img_buf, x=10, w=pdf.w - 20)
-    
-    # Tabla de datos
-    pdf.ln(2)
-    pdf.set_font("Arial", "B", 10)
-    pdf.cell(50, 7, "Tipo Contrato", border=1)
-    pdf.cell(30, 7, "Tasa Mora", border=1)
-    pdf.cell(30, 7, "Total Clientes", border=1, ln=True)
-    pdf.set_font("Arial", "", 9)
-    for _, row in gold_contract.iterrows():
-        pdf.cell(50, 6, row['TIPO_CONTRATO'], border=1)
-        pdf.cell(30, 6, f"{row['TASA_MORA']:.2%}", border=1)
-        pdf.cell(30, 6, str(row['TOTAL_CLIENTES']), border=1, ln=True)
-    
-    pdf.ln(4)
-    # Análisis BA
-    pdf.set_fill_color(240, 240, 240)
-    pdf.set_font("Arial", "I", 10)
-    pdf.multi_cell(0, 6, 
-        "Análisis BA: Los contratos de tipo 'Revolving' muestran la tasa de morosidad más alta. "
-        "Esto sugiere que los productos de crédito rotativo requieren controles adicionales de seguimiento y quizás "
-        "límites más conservadores. Los contratos 'Cash loans' presentan mejor comportamiento, posiblemente por estar "
-        "respaldados por flujos de caja predecibles.",
-        fill=True)
-    pdf.ln(5)
-    
-    # -- Gráfico 2: Tasa mora por educación --
-    fig, ax = plt.subplots(figsize=(5, 3))
-    bars = ax.bar(gold_edu['NIVEL_EDUCATIVO'], gold_edu['TASA_MORA']*100, color='darkorange')
-    ax.set_title('Tasa de Morosidad por Nivel Educativo', fontsize=10)
-    ax.set_ylabel('Tasa de Mora (%)')
-    ax.tick_params(axis='x', rotation=45)
-    for bar, val in zip(bars, gold_edu['TASA_MORA']*100):
-        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5, f'{val:.1f}%', ha='center', fontsize=8)
-    plt.tight_layout()
-
-    # Después de crear las barras y antes de guardar la imagen
-    max_val = gold_edu['TASA_MORA'].max() * 100
-    ax.set_ylim(0, max_val * 1.2)
-
-    img_buf2 = BytesIO()
-    fig.savefig(img_buf2, format='PNG', dpi=120)
-    plt.close()
-    img_buf2.seek(0)
-    pdf.image(img_buf2, x=10, w=pdf.w - 20)
-    
-    # Tabla
-    pdf.ln(2)
-    pdf.set_font("Arial", "B", 10)
-    pdf.cell(50, 7, "Nivel Educativo", border=1)
-    pdf.cell(30, 7, "Tasa Mora", border=1)
-    pdf.cell(30, 7, "Total Clientes", border=1, ln=True)
-    pdf.set_font("Arial", "", 9)
-    for _, row in gold_edu.iterrows():
-        pdf.cell(50, 6, row['NIVEL_EDUCATIVO'], border=1)
-        pdf.cell(30, 6, f"{row['TASA_MORA']:.2%}", border=1)
-        pdf.cell(30, 6, str(row['TOTAL_CLIENTES']), border=1, ln=True)
-    
-    pdf.ln(4)
-    pdf.set_fill_color(240, 240, 240)
-    pdf.set_font("Arial", "I", 10)
-    pdf.multi_cell(0, 6, 
-        "Análisis BA: La educación secundaria presenta la tasa más baja de incumplimiento, mientras que los clientes con educación "
-        "primaria o inferior muestran mayor riesgo. Esta variable es un fuerte predictor y debería considerarse en el scoring final.",
-        fill=True)
-    pdf.ln(5)
-    
-    # -- Gráfico 3: Endeudamiento relativo por estado civil --
-    fig, ax = plt.subplots(figsize=(5, 3))
-    bars = ax.bar(gold_family['ESTADO_CIVIL'], gold_family['RAZON_CREDITO_INGRESO_PROMEDIO'], color='seagreen')
-    ax.set_title('Razón Crédito/Ingreso Promedio por Estado Civil', fontsize=10)
-    ax.set_ylabel('Razón Crédito/Ingreso')
-    ax.tick_params(axis='x', rotation=45)
-    for bar, val in zip(bars, gold_family['RAZON_CREDITO_INGRESO_PROMEDIO']):
-        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01, f'{val:.2f}', ha='center', fontsize=8)
-    plt.tight_layout()
-
-    max_val = gold_family['RAZON_CREDITO_INGRESO_PROMEDIO'].max()
-    ax.set_ylim(0, max_val * 1.2)
-
-    img_buf3 = BytesIO()
-    fig.savefig(img_buf3, format='PNG', dpi=120)
-    plt.close()
-    img_buf3.seek(0)
-    pdf.image(img_buf3, x=10, w=pdf.w - 20)
-    
-    pdf.ln(4)
-    pdf.set_fill_color(240, 240, 240)
-    pdf.set_font("Arial", "I", 10)
-    pdf.multi_cell(0, 6, 
-        "Análisis BA: Los clientes solteros y viudos tienden a tener una razón crédito/ingreso más alta, lo que podría indicar "
-        "una mayor carga financiera relativa. Conviene evaluar si estos segmentos requieren criterios de aprobación diferenciados.",
-        fill=True)
-    
-    pdf.ln(10)
-    pdf.set_font("Arial", "I", 9)
-    pdf.cell(0, 8, "Reporte generado automaticamente por el prototipo de Data Warehouse - Tesis I", ln=True, align="C")
-    
-    # Devolver el PDF como bytes
-    return bytes(pdf.output(dest='S'))
-
-# ============================== FLUJO PRINCIPAL DE LA APLICACIÓN ==============================
-
-# Descarga y carga de datos (Bronze)
-df_bronze = cargar_dataset_completo()
-if df_bronze is None:
-    st.error("No se pudo obtener el dataset. Revisa los logs.")
-    st.stop()
-
-# --- Menú lateral de navegación ---
+# --------------------------- SIDEBAR Y NAVEGACIÓN ---------------------------
 st.sidebar.title("📂 Capas del Data Warehouse")
 capa = st.sidebar.radio(
     "Selecciona una capa:",
@@ -564,276 +55,45 @@ capa = st.sidebar.radio(
     index=0
 )
 
-# Construcción del Data Warehouse (cacheada como recurso)
-df_silver, tiempo_silver, gold_contract, gold_edu, gold_family, tiempo_gold = construir_data_warehouse(df_bronze)
-st.session_state.etl_completado = True 
+# --------------------------- RENDERIZADO DE VISTAS ---------------------------
+if capa.startswith("🥉"):
+    render_bronze(df_bronze, settings)
+elif capa.startswith("🥈"):
+    render_silver(df_bronze, df_silver, meta_silver, settings)
+else:
+    render_gold(df_silver, gold_contract, gold_edu, gold_family, meta_gold, settings)
 
-
-# =============================== MOSTRAR CAPAS ===============================
-
-if capa == "🥉 Bronze (Datos crudos)":
-    st.header("Capa Bronze – Ingesta de datos crudos")
-    st.markdown("""
-    **Propósito:** Almacenar los datos exactamente como llegan de las fuentes externas
-    (en una microfinanciera serían documentos físicos escaneados, planillas Excel de diferentes agencias, etc.).
-    Aquí no se modifica nada; se preserva la trazabilidad original.
-    """)
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric("Número de registros", f"{df_bronze.shape[0]:,}")
-    with col2:
-        st.metric("Variables originales", df_bronze.shape[1])
-    
-    st.subheader("Vista previa (primeras 5 filas)")
-    st.dataframe(df_bronze.head())
-    
-    st.subheader("Estadísticas básicas")
-    st.dataframe(df_bronze.describe())
-    
-    # Gráfico: Distribución de la variable objetivo (TARGET = 1 significa moroso)
-    st.subheader("Distribución de TARGET (clientes morosos vs cumplidores)")
-    target_counts = df_bronze['TARGET'].value_counts().reset_index()
-    target_counts.columns = ['TARGET', 'Cantidad']
-    target_counts['TARGET'] = target_counts['TARGET'].map({0:'Cumplidor', 1:'Moroso'})
-    
-    fig = px.pie(target_counts, values='Cantidad', names='TARGET',
-                 title="Proporción de morosidad en datos crudos",
-                 color='TARGET', color_discrete_map={'Cumplidor':'green', 'Moroso':'red'})
-    st.plotly_chart(fig, use_container_width=True)
-    
-    st.caption("⏱️ Tiempo de carga (incluye descarga): verificado al iniciar la app.")
-    
-    # ==================== BOTÓN 1: AUDITORÍA DE CALIDAD BRONZE ====================
-    st.markdown("---")
-    st.subheader("🛠️ Herramientas de auditoría")
-    
-    # Inicializar session state
-    if 'bronze_auditoria_mostrada' not in st.session_state:
-        st.session_state.bronze_auditoria_mostrada = False
-    
-    if st.button("🔎 Auditar calidad de datos crudos", key="btn_auditar_bronze", type="primary"):
-        st.session_state.bronze_auditoria_mostrada = True
-    
-    if st.session_state.bronze_auditoria_mostrada:
-        resultado_auditoria, num_criticas, pct_dup, memoria_mb, total_cols = auditar_calidad_bronze(df_bronze)
-        
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Total columnas", total_cols)
-        with col2:
-            st.metric("Columnas críticas (>50% nulos)", num_criticas)
-        with col3:
-            st.metric("% Registros duplicados", f"{pct_dup:.2f}%")
-        with col4:
-            st.metric("Memoria ocupada (MB)", f"{memoria_mb:.2f}")
-        
-        if not resultado_auditoria.empty:
-            st.subheader("Columnas con datos faltantes significativos")
-            st.dataframe(resultado_auditoria, use_container_width=True)
-        
-        if num_criticas > 0:
-            st.warning("⚠️ Estas columnas introducen asimetría de información severa. En una IMF sin Data Warehouse, este nivel de datos faltantes obliga al analista a rechazar solicitudes o decidir sin evidencia. Nuestra arquitectura aplica reglas de imputación en la capa Silver para mitigar este problema.")
-        else:
-            st.success("✅ No se encontraron columnas críticas. La calidad base de los datos es aceptable para iniciar el proceso ETL.")
-
-
-elif capa == "🥈 Silver (Datos limpios y transformados)":
-    st.header("Capa Silver – Transformación y enriquecimiento")
-    st.markdown(f"""
-    **Propósito:** Aplicar reglas de calidad y derivar variables de capacidad de pago.
-    - Se imputaron ingresos nulos/cero.
-    - Se crearon razones financieras: `CREDIT_TO_INCOME_RATIO` y `ANNUITY_INCOME_RATIO`.
-    - Se filtraron outliers extremos (típico en ETL para evitar distorsiones en modelos).
-    
-    ⏱️ **Tiempo de procesamiento de esta capa:** {tiempo_silver:.2f} segundos.
-    
-    *Nota:* En la tesis, esta capa corresponde al cálculo de la capacidad de endeudamiento
-    a partir de documentos no estructurados (boletas de pago, estados de cuenta). Aquí simulamos
-    ese paso con variables numéricas del dataset.
-    """)
-    
-    st.subheader("Datos transformados (muestra)")
-    st.dataframe(df_silver.head())
-    
-    st.subheader("Estadísticas (variables clave)")
-    st.dataframe(df_silver.describe())
-    
-    # Gráfico: Distribución de CREDIT_TO_INCOME_RATIO según TARGET
-    st.subheader("Razón Crédito/Ingreso y morosidad")
-    fig = px.histogram(df_silver, x="CREDIT_TO_INCOME_RATIO", color="TARGET",
-                       marginal="box", nbins=50,
-                       title="¿Clientes con mayor endeudamiento relativo tienen más morosidad?",
-                       labels={"CREDIT_TO_INCOME_RATIO": "Razón Crédito/Ingreso", "TARGET": "Moroso"},
-                       color_discrete_map={0: 'green', 1: 'red'})
-    st.plotly_chart(fig, use_container_width=True)
-    
-    st.caption("Un analista de crédito revisaría este gráfico para establecer políticas de endeudamiento máximo.")
-    
-    # ==================== BOTÓN 2: TRAZABILIDAD SILVER ====================
-    st.markdown("---")
-    st.subheader("📋 Gobierno del Dato")
-    
-    # Inicializar session state
-    if 'silver_trazabilidad_mostrada' not in st.session_state:
-        st.session_state.silver_trazabilidad_mostrada = False
-    
-    if st.button("🧹 Trazabilidad de reglas de calidad (Data Governance)", key="btn_trazabilidad_silver", type="primary"):
-        st.session_state.silver_trazabilidad_mostrada = True
-    
-    if st.session_state.silver_trazabilidad_mostrada:
-        balance, derivadas, filas_eliminadas = trazabilidad_silver(df_bronze, df_silver)
-        
-        st.subheader("📊 Balance de transformación (Bronze → Silver)")
-        st.dataframe(balance, use_container_width=True, hide_index=True)
-        
-        st.subheader("🔬 Variables derivadas y sus estadísticas")
-        st.dataframe(derivadas, use_container_width=True, hide_index=True)
-        
-        st.success("✅ La aplicación consistente de reglas de calidad elimina la variabilidad humana en la preparación de datos. Cada registro recibe exactamente el mismo tratamiento, garantizando equidad en la evaluación crediticia. Las reglas documentadas aquí son el primer paso hacia un gobierno del dato auditado y transparente.")
-
-
-elif capa == "🥇 Gold (Métricas de riesgo)":
-    st.header("Capa Gold – Agregaciones para toma de decisiones")
-    st.markdown(f"""
-    **Propósito:** Proporcionar métricas consolidadas listas para ser consumidas
-    por reportes, dashboards o futuros modelos de scoring.
-    
-    ⏱️ **Tiempo de procesamiento de esta capa:** {tiempo_gold:.2f} segundos.
-    
-    *En la tesis, esta capa alimentará directamente los módulos de analítica predictiva
-    y los informes de riesgo institucional.*
-    """)
-    
-    # Tabla de tasa de mora por tipo de contrato
-    st.subheader("Tasa de morosidad por tipo de contrato")
-    st.dataframe(gold_contract.style.format({"TASA_MORA": "{:.2%}"}))
-    
-    fig1 = px.bar(gold_contract, x="TIPO_CONTRATO", y="TASA_MORA",
-                  title="Bad rate por tipo de contrato",
-                  labels={"TASA_MORA": "Tasa de morosidad", "TIPO_CONTRATO": ""})
-    st.plotly_chart(fig1, use_container_width=True)
-    
-    # Tasa de mora por nivel educativo
-    st.subheader("Tasa de morosidad por nivel educativo")
-    st.dataframe(gold_edu.style.format({"TASA_MORA": "{:.2%}"}))
-    
-    fig2 = px.bar(gold_edu, x="NIVEL_EDUCATIVO", y="TASA_MORA",
-                  title="Bad rate por educación",
-                  labels={"TASA_MORA": "Tasa de morosidad"})
-    st.plotly_chart(fig2, use_container_width=True)
-    
-    # Razón crédito/ingreso promedio por estado civil
-    st.subheader("Razón crédito/ingreso promedio por estado civil")
-    st.dataframe(gold_family)
-    
-    fig3 = px.bar(gold_family, x="ESTADO_CIVIL", y="RAZON_CREDITO_INGRESO_PROMEDIO",
-                  title="Endeudamiento relativo según estado civil",
-                  labels={"RAZON_CREDITO_INGRESO_PROMEDIO": "Razón Crédito/Ingreso promedio"})
-    st.plotly_chart(fig3, use_container_width=True)
-    
-    # ==================== BOTÓN 3: EXPORTAR FEATURE STORE GOLD ====================
-    st.markdown("---")
-    st.subheader("🤖 Preparación para Machine Learning")
-    
-    # Inicializar session state
-    if 'gold_exportacion_mostrada' not in st.session_state:
-        st.session_state.gold_exportacion_mostrada = False
-    
-    if st.button("📊 Exportar feature store para modelo predictivo", key="btn_exportar_gold", type="primary"):
-        st.session_state.gold_exportacion_mostrada = True
-    
-    if st.session_state.gold_exportacion_mostrada:
-        df_catalogo, corr_matrix, csv_gold, csv_ml = exportar_feature_store(df_silver, gold_contract, gold_edu, gold_family)
-        
-        # Catálogo de features
-        st.subheader("📋 Catálogo de features disponibles")
-        st.dataframe(df_catalogo, use_container_width=True, hide_index=True)
-        
-        # Matriz de correlación
-        if not corr_matrix.empty:
-            st.subheader("🔗 Matriz de correlación (variables numéricas de Silver)")
-            fig_corr = px.imshow(corr_matrix, 
-                                 text_auto='.2f',
-                                 color_continuous_scale='RdBu_r',
-                                 zmin=-1, zmax=1,
-                                 title="Correlación entre features numéricas")
-            fig_corr.update_layout(height=600)
-            st.plotly_chart(fig_corr, use_container_width=True)
-        
-        # Botones de descarga
-        st.subheader("📥 Descarga de datasets")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.download_button(
-                label="📥 Descargar métricas Gold (CSV)",
-                data=csv_gold.to_csv(index=False).encode('utf-8'),
-                file_name='gold_metricas_riesgo.csv',
-                mime='text/csv',
-                key='download_gold'
-            )
-        with col2:
-            st.download_button(
-                label="📥 Descargar muestra para ML - 1000 registros (CSV)",
-                data=csv_ml.to_csv(index=False).encode('utf-8'),
-                file_name='silver_sample_ml.csv',
-                mime='text/csv',
-                key='download_ml'
-            )
-        
-        st.info("💡 Esta capa Gold es la **feature store** que alimentará los modelos predictivos en Tesis II. Las variables aquí estandarizadas (ratios financieros, indicadores binarios de empleo, segmentaciones por educación y estado civil) constituyen el conjunto mínimo viable de predictores para un modelo de credit scoring en microfinanzas. La matriz de correlación ayuda a identificar posibles variables redundantes antes del entrenamiento.")
-
-# Botón para ejecutar/refrescar ETL (simula la automatización del pipeline)
+# --------------------------- BOTONES DEL SIDEBAR ---------------------------
 if st.sidebar.button("🔄 Ejecutar Pipeline ETL completo"):
-    # Después de construir_data_warehouse, añadir al final de la app principal:
-    st.session_state.etl_completado = True
+    st.cache_data.clear()
+    st.cache_resource.clear()
+    st.rerun()
 
-    # Botón de reporte PDF en sidebar
 if st.sidebar.button("📄 Generar Reporte PDF del DW", key="btn_reporte_pdf"):
     if not st.session_state.get("etl_completado", False):
-            st.sidebar.error("⚠️ El proceso ETL aún no ha finalizado. Ejecute primero el pipeline completo.")
+        st.sidebar.error("⚠️ El proceso ETL aún no ha finalizado. Ejecute primero el pipeline completo.")
     else:
         with st.sidebar:
             with st.spinner("Generando reporte PDF..."):
                 try:
-                    pdf_bytes = generar_reporte_pdf(df_bronze, df_silver, gold_contract, gold_edu, gold_family)
+                    pdf_bytes = generar_reporte_pdf(
+                        df_bronze, df_silver,
+                        gold_contract, gold_edu, gold_family,
+                        settings
+                    )
                     st.download_button(
-                    label="📥 Descargar Reporte PDF",
-                    data=pdf_bytes,
-                    file_name="reporte_datawarehouse_riesgo.pdf",
-                    mime="application/pdf"
+                        label="📥 Descargar Reporte PDF",
+                        data=pdf_bytes,
+                        file_name="reporte_datawarehouse_riesgo.pdf",
+                        mime="application/pdf"
                     )
                     st.success("✅ Reporte generado exitosamente.")
                 except Exception as e:
                     st.error(f"❌ Error al generar el reporte: {str(e)}")
 
-# ================== SECCIÓN FINAL: CONEXIÓN CON LA TESIS ==================
+# --------------------------- PIE DE PÁGINA ---------------------------
 st.sidebar.markdown("---")
 st.sidebar.info("""
 **📌 Repositorio local:** `credit_warehouse.db`  
 **📋 Código fuente:** disponible en el repositorio del proyecto.  
-""")
-
-st.markdown("---")
-st.markdown("""
-## 🔗 Vinculación con el proyecto de tesis
-
-Este prototipo implementa la **arquitectura Medallion** (Bronze, Silver, Gold) descrita en el Capítulo I de la investigación.
-La selección de variables y las transformaciones aplicadas emulan el pipeline ETL que las microfinancieras necesitan
-para automatizar el cálculo de la capacidad de endeudamiento, superando así la dependencia de hojas de cálculo manuales.
-
-- **Bronze** refleja la ingesta de documentos heterogéneos (boletas de pago, DNI, etc.) que hoy se procesan manualmente.
-- **Silver** ejecuta validaciones y genera indicadores como `CREDIT_TO_INCOME_RATIO`, análogos a los que un analista
-  obtendría al evaluar la capacidad de pago de una MYPE.
-- **Gold** consolida métricas de riesgo (bad rate) por segmentos, que en la siguiente fase (Tesis II) se utilizarán
-  como insumos para modelos de machine learning.
-
-El uso de **Streamlit** y **SQLite** permite validar de forma interactiva la precisión y reducción de latencia
-(medida con los tiempos de procesamiento mostrados en cada capa), los cuales son los indicadores clave de éxito
-definidos en los objetivos específicos (reducción de tiempo y aumento de precisión frente a métodos manuales).
-
-**Próximos pasos sugeridos por el equipo de investigación (DeepSeek Expert & Gemini Pro):**
-- Incorporar datos alternativos (texto de documentos) mediante IDP (LayoutLMv3).
-- Ampliar la capa Gold con métricas ESG.
-- Desplegar en Streamlit Cloud para revisión externa.
 """)

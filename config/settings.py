@@ -74,10 +74,11 @@ class Settings:
     pdf_cell_w_col: int = 60
     pdf_cell_w_val_small: int = 30
     pdf_cell_w_class: int = 40
-    pdf_cell_w_metric: int = 50
+    pdf_cell_w_metric: int = 85
     pdf_cell_w_var: int = 45
     pdf_cell_w_formula: int = 70
     pdf_cell_w_stat: int = 20
+    pdf_cell_w_res_null: int = 30
     
     # Configuración de Gráficos (Plotting)
     plot_dpi: int = 120

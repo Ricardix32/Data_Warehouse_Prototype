@@ -1,6 +1,6 @@
 import streamlit as st
 import plotly.express as px
-from audit import auditar_calidad_bronze
+from src.audit import auditar_calidad_bronze
 
 def render_bronze(df_bronze, settings):
     st.header("Capa Bronze – Ingesta de datos crudos")

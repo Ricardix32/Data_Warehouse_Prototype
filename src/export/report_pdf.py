@@ -123,7 +123,7 @@ def generar_reporte_pdf(
     pdf.cell(0, 7, "Variables Derivadas", ln=True)
     headers_der = [h.title() for h in settings.PDF_COLUMNS_DERIVED]
     pdf.set_font("Arial", "B", settings.pdf_font_size_caption)
-    widths_der = [settings.pdf_cell_w_var, settings.pdf_cell_w_formula, settings.pdf_cell_w_stat, settings.pdf_cell_w_stat, settings.pdf_cell_w_stat]
+    widths_der = [settings.pdf_cell_w_var, settings.pdf_cell_w_formula, settings.pdf_cell_w_stat, settings.pdf_cell_w_stat, settings.pdf_cell_w_res_null]
     for i, h in enumerate(headers_der):
         pdf.cell(widths_der[i], 6, h, border=1)
     pdf.ln()
@@ -237,12 +237,12 @@ def generar_reporte_pdf(
     tab_headers_fam = [h.title() for h in settings.PDF_COLUMNS_RISK_FAMILY]
     pdf.set_font("Arial", "B", settings.pdf_font_size_table_header)
     pdf.cell(settings.pdf_cell_w_var, 7, tab_headers_fam[0], border=1)
-    pdf.cell(settings.pdf_cell_w_val_small, 7, tab_headers_fam[1], border=1)
+    pdf.cell(settings.pdf_cell_w_formula, 7, tab_headers_fam[1], border=1)
     pdf.ln()
     pdf.set_font("Arial", "", settings.pdf_font_size_table_row)
     for _, row in gold_family.iterrows():
         pdf.cell(settings.pdf_cell_w_var, 6, str(row[settings.PDF_COLUMNS_RISK_FAMILY[0]]), border=1)
-        pdf.cell(settings.pdf_cell_w_val_small, 6, f"{row[settings.PDF_COLUMNS_RISK_FAMILY[1]]:.2f}", border=1)
+        pdf.cell(settings.pdf_cell_w_formula, 6, f"{row[settings.PDF_COLUMNS_RISK_FAMILY[1]]:.2f}", border=1)
         pdf.ln()
     pdf.ln(4)
 

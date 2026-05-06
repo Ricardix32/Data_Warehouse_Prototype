@@ -1,6 +1,6 @@
 import streamlit as st
 import plotly.express as px
-from export import exportar_feature_store
+from src.export import exportar_feature_store
 
 def render_gold(df_silver, gold_contract, gold_edu, gold_family, meta_gold, settings):
     st.header("Capa Gold – Agregaciones para toma de decisiones")

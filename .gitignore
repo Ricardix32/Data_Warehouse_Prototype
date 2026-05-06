@@ -3,3 +3,6 @@ application_train.csv
 credit_warehouse.db
 .streamlit/
 GEMINI.md
+__pycache__/
+*.pyc
+*.pyo
