@@ -99,6 +99,31 @@ class Settings:
     
     #limite de auditorías
     audit_head_limit: int = 10
+        
+    # --- Identificadores de columnas clave ---
+    id_column: str = "SK_ID_CURR"
+    income_column: str = "AMT_INCOME_TOTAL"
+    silver_columns: Tuple[str, ...] = (
+        "SK_ID_CURR", "TARGET", "NAME_CONTRACT_TYPE", "CODE_GENDER",
+        "AMT_CREDIT", "AMT_INCOME_TOTAL", "AMT_ANNUITY",
+        "CREDIT_TO_INCOME_RATIO", "ANNUITY_INCOME_RATIO",
+        "IS_EMPLOYED", "NAME_EDUCATION_TYPE", "NAME_FAMILY_STATUS",
+        "CNT_CHILDREN",
+    )
+
+    # --- Exportación de archivos ---
+    export_gold_csv_name: str = "gold_metricas_riesgo.csv"
+    export_ml_csv_name: str = "silver_sample_ml.csv"
+
+    # --- Metadatos del reporte ---
+    report_authors_full: str = (
+        "Montenegro Baca, Zee Ricardo & Rodriguez Preciado, Andre Jhonel"
+    )
+    report_advisor: str = "Dr. Santos Fernandez, Juan Pedro"
+    pdf_footer_text: str = (
+        "Reporte generado automáticamente por el prototipo de Data Warehouse - Tesis I"
+    )
+    pdf_date_format: str = "%d/%m/%Y %H:%M"
 
     # --- Lógica de Negocio / Análisis BA Parametrizado ---
     @property
@@ -122,6 +147,19 @@ class Settings:
         "Esto sugiere que los productos de crédito rotativo requieren controles adicionales "
         "de seguimiento y quizás límites más conservadores."
     )
+    
+    # Dentro de la clase Settings, junto a los otros textos de análisis:
+    analysis_risk_education_gold: str = (
+        "La educación secundaria presenta la tasa más baja de incumplimiento, "
+        "mientras que los clientes con educación primaria o inferior muestran mayor riesgo. "
+        "Esta variable es un fuerte predictor y debería considerarse en el scoring final."
+    )
+    analysis_risk_family_gold: str = (
+        "Los clientes solteros y viudos tienden a tener una razón crédito/ingreso más alta, "
+        "lo que podría indicar una mayor carga financiera relativa. Conviene evaluar si "
+        "estos segmentos requieren criterios de aprobación diferenciados."
+    )
+    
 
 def load_config() -> Settings:
     """
@@ -148,6 +186,21 @@ def load_config() -> Settings:
     
     author = os.environ.get("REPORT_AUTHOR", "Montenegro & Rodriguez")
     title = os.environ.get("REPORT_TITLE", "Análisis de Riesgo Crediticio - DW")
+        
+    authors_full = os.environ.get(
+        "REPORT_AUTHORS_FULL",
+        "Montenegro Baca, Zee Ricardo & Rodriguez Preciado, Andre Jhonel",
+    )
+    advisor = os.environ.get("REPORT_ADVISOR", "Dr. Santos Fernandez, Juan Pedro")
+    footer = os.environ.get(
+        "REPORT_FOOTER",
+        "Reporte generado automáticamente por el prototipo de Data Warehouse - Tesis I",
+    )
+    date_format = os.environ.get("REPORT_DATE_FORMAT", "%d/%m/%Y %H:%M")
+
+    # Nombres de exportación
+    gold_csv = os.environ.get("EXPORT_GOLD_CSV", "gold_metricas_riesgo.csv")
+    ml_csv = os.environ.get("EXPORT_ML_CSV", "silver_sample_ml.csv")
 
     # Validación de integridad de origen de datos
     if not gdrive_url and not os.path.exists(csv_filename):
@@ -167,5 +220,11 @@ def load_config() -> Settings:
         report_title=title,
         target_column=os.environ.get("FEATURE_TARGET_COLUMN", "TARGET"),
         ml_sample_size=int(os.environ.get("ML_SAMPLE_SIZE", "1000")),
-        ml_random_state=int(os.environ.get("ML_RANDOM_STATE", "42"))
+        ml_random_state=int(os.environ.get("ML_RANDOM_STATE", "42")),
+        report_authors_full=authors_full,
+        report_advisor=advisor,
+        pdf_footer_text=footer,
+        pdf_date_format=date_format,
+        export_gold_csv_name=gold_csv,
+        export_ml_csv_name=ml_csv,
     )
